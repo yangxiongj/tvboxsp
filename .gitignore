@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 key/*.key
 key/*.pub
+/src-tauri/Cargo.lock
+/public/tauri.zip

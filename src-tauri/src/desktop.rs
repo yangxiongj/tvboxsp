@@ -32,21 +32,52 @@ pub async fn parse_playlist(
     Ok(res)
 }
 
+
 #[tauri::command]
 pub async fn parse_tvbox(uri: String, base: Option<String>) -> Result<tvbox::source::Source> {
-    let content = utils::read_content(&uri).await.map_err(|e| {
-        println!("err:{:?}", e);
-        tauri::Error::AssetNotFound(e.to_string())
-    })?;
-    let mut source = tvbox::source::Source::parse(&content, '#').map_err(|e| {
-        println!("err:{:?}", e);
-        tauri::Error::ApiNotAllowlisted(e.to_string())
-    })?;
-    if uri.starts_with("http://") || uri.starts_with("https://") {
-        source.base(&uri).ok();
-    } else if let Some(base) = base {
-        source.base(&base).ok();
+    async fn fetch_encoded(uri: &str) -> Result<String> {
+        let encoded = urlencoding::encode(uri);
+        let new_url = format!("https://ua.fongmi.eu.org/box.php?url={encoded}");
+        utils::read_content(&new_url).await.map_err(|e| {
+            println!("[ERROR] 转码失败: {e:?}");
+            tauri::Error::AssetNotFound(e.to_string())
+        })
     }
+
+    async fn get_source(uri: &str) -> Result<tvbox::source::Source> {
+        let content = fetch_encoded(uri).await?;
+        tvbox::source::Source::parse(&content, '#').map_err(|e| {
+            println!("解析失败: {e:?}");
+            tauri::Error::ApiNotAllowlisted(e.to_string())
+        })
+    }
+
+    // 第一阶段：尝试原始请求和解析
+    let mut source = match utils::read_content(&uri).await {
+        Ok(c) if !c.is_empty() => match tvbox::source::Source::parse(&c, '#') {
+            Ok(s) => s,
+            Err(e) => {
+                println!("[WARN] 原始内容解析失败: {e:?}，触发转码");
+                get_source(&uri).await?
+            }
+        },
+        Ok(_) => {
+            println!("[WARN] 内容为空，触发转码");
+            get_source(&uri).await?
+        }
+        Err(e) => {
+            println!("[ERROR] 原始请求失败: {e:?}，触发转码");
+            get_source(&uri).await?
+        }
+    };
+    // 第二阶段：设置base路径
+    let base_uri = if uri.starts_with("http://") || uri.starts_with("https://") {
+        &uri
+    } else {
+        base.as_deref().unwrap_or_default()
+    };
+    source.base(base_uri).ok();
+
     Ok(source)
 }
 

@@ -1,8 +1,10 @@
 use anyhow::Result;
 use cached::proc_macro::cached;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use std::{net::ToSocketAddrs, time::Duration};
 use url::Url;
+use reqwest::{Client, Response};
+use std::error::Error;
 
 /// 检测url的服务器网络可连接性，并不检测实际url的内容
 #[cached(key = "String", result = true, convert = r#"{ format!("{}", uri) }"#)]
@@ -21,6 +23,29 @@ pub async fn url_connectivity(uri: &str) -> Result<bool> {
     )
     .await??;
     Ok(true)
+}
+async fn fetch_data(client: &Client, uri: &str) -> Result<Response> {
+    // 首次发送 GET 请求
+    let mut response = client.get(uri).send().await?;
+
+    // 检查响应内容类型是否为 HTML
+    let is_html = response.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok())
+        .map(|ct| ct.contains("text/html")) // 包括 text/html 或 application/xhtml+xml
+        .unwrap_or(false);
+
+    // 若返回 HTML 则改用 POST 重试
+    if is_html {
+        println!("检测到 HTML 响应，正在尝试 POST 请求...");
+        response = client.post(uri)
+            // 如需添加 POST 参数可在此扩展（示例添加空 JSON 体）
+            .json(&serde_json::json!({}))
+            .send()
+            .await?;
+    }
+
+    Ok(response)
 }
 
 /// 检测url的可访问性
@@ -132,7 +157,20 @@ pub async fn read_content(uri: &str) -> anyhow::Result<String> {
         .ok()
         .and_then(|uri| if uri.has_host() { Some(uri) } else { None });
     if let Some(uri) = href {
-        let content = reqwest::get(uri).await?.text().await?;
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(
+                "okhttp/3.15"
+                // "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/112.0",
+            ).default_headers({
+            let mut headers = HeaderMap::new();
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            headers
+        })
+            .connect_timeout(Duration::from_secs_f32(6.0))
+            .timeout(Duration::from_secs_f32(10.0))
+            .build()?;
+        let content = fetch_data(&client, uri.as_str()).await?.text().await?;
+
         Ok(content)
     } else if std::path::Path::new(&uri).exists() {
         let content = std::fs::read_to_string(&uri)?;

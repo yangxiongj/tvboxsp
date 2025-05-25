@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, onMounted } from "vue";
+import {reactive, onMounted,computed , ref} from "vue";
 import { Message } from "@arco-design/web-vue";
 import WidthAuto from "./ui/width-auto.vue";
 import Rules from "./tvbox/rules.vue";
@@ -42,6 +42,7 @@ listen("check_connections://progress", async (e) => {
 const store = useTvBoxStore();
 async function load() {
   await store.load(tvbox.uri);
+  saveHistory()
   Message.success("加载完成!");
 }
 const previewHandle = async () => {
@@ -62,8 +63,86 @@ const merginConfirm = async () => {
   tvbox.mergining = false;
   Message.success("合并完成");
 };
+const MAX_HISTORY = 300
+const HISTORY_KEY = 'tvbox_history'
+
+// 历史记录相关状态
+const showHistory = ref(false)
+const historyList = ref<string[]>([])
+const selectedIndex = ref(-1)
+// 过滤后的历史记录
+const filteredHistory = computed(() => {
+  const searchText = tvbox.uri.toLowerCase()
+  return historyList.value.filter(item =>
+      item.toLowerCase().includes(searchText)
+  )
+})
+
+// 加载历史记录
+const loadHistory = (): void => {
+  const history = localStorage.getItem(HISTORY_KEY)
+  historyList.value = history ? JSON.parse(history) as string[] : []
+}
+
+// 保存历史记录
+const saveHistory = (): void => {
+  const trimmedUri = tvbox.uri.trim()
+  if (!trimmedUri) return
+
+  const newList = [
+    trimmedUri,
+    ...historyList.value.filter(item => item !== trimmedUri)
+  ]
+
+  historyList.value = newList.slice(0, MAX_HISTORY)
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(historyList.value))
+}
+
+// 删除历史记录
+const deleteHistory = (item: string): void => {
+  historyList.value = historyList.value.filter(i => i !== item)
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(historyList.value))
+}
+
+// 选择历史项
+const selectItem = (item: string): void => {
+  tvbox.uri = item
+  showHistory.value = false
+  load()
+}
+
+
+// 键盘导航
+const navigateHistory = (direction: number): void => {
+  if (!showHistory.value) return
+
+  const maxIndex = historyList.value.length - 1
+  selectedIndex.value = Math.min(
+      Math.max(selectedIndex.value + direction, 0),
+      maxIndex
+  )
+}
+
+// 回车选择
+const selectHistory = (): void => {
+  if (selectedIndex.value >= 0 && selectedIndex.value < historyList.value.length) {
+    selectItem(historyList.value[selectedIndex.value])
+  } else {
+    load()
+  }
+}
+
+// 延迟隐藏下拉框
+const hideHistory = (): void => {
+  setTimeout(() => {
+    showHistory.value = false
+    selectedIndex.value = -1
+  }, 200)
+}
+
 onMounted(() => {
   store.init();
+  loadHistory()
 });
 </script>
 
@@ -90,14 +169,52 @@ onMounted(() => {
     </template>
 
     <div class="tvbox w-full h-full flex flex-col">
-      <div class="head-search flex flex-row w-full">
+      <!-- 搜索框区域 -->
+      <div class="head-search flex flex-row w-full relative">
+        <!-- 搜索输入框 -->
         <a-input
-          size="mini"
-          class="flex-1"
-          v-model="tvbox.uri"
-          :allow-clear="true"
-          placeholder="点播源URL地址" />
-        <a-button size="mini" class="ml-2" type="outline" @click="load">
+            size="mini"
+            class="flex-1"
+            v-model="tvbox.uri"
+            :allow-clear="true"
+            placeholder="点播源URL地址"
+            @focus="showHistory = true"
+            @blur="hideHistory"
+            @keydown.up.prevent="navigateHistory(-1)"
+            @keydown.down.prevent="navigateHistory(1)"
+            @keydown.enter="selectHistory"
+        />
+
+        <!-- 历史记录下拉框 -->
+        <div
+            v-show="showHistory && filteredHistory.length > 0"
+            class="history-list absolute top-8 w-full bg-white shadow-lg z-50 border rounded"
+        >
+          <div
+              v-for="(item, index) in filteredHistory"
+              :key="index"
+              class="history-item px-2 py-1 hover:bg-gray-100 cursor-pointer flex justify-between items-center"
+              :class="{ 'bg-blue-100': selectedIndex === index }"
+              @mousedown="selectItem(item)"
+          >
+            <span class="flex-1">{{ item }}</span>
+            <a-button
+                size="mini"
+                type="text"
+                @click.stop="deleteHistory(item)"
+                class="text-red-500 hover:text-red-700"
+            >
+              删除
+            </a-button>
+          </div>
+        </div>
+        <!-- 加载按钮 -->
+        <a-button
+            size="mini"
+            class="ml-2"
+            type="outline"
+            @click="load"
+        >
           加载
         </a-button>
       </div>
@@ -179,10 +296,22 @@ onMounted(() => {
 </template>
 <style lang="scss" scoped>
 .tvbox {
-  ::v-deep() {
+  ::v-deep(*) {
     .arco-tabs-nav-type-line .arco-tabs-tab {
       margin: 0 8px;
     }
+  }
+  .history-list {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .history-item {
+    transition: background-color 0.2s;
+  }
+
+  .history-item:not(:last-child) {
+    border-bottom: 1px solid #eee;
   }
 }
 </style>
